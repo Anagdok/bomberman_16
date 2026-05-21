@@ -9,18 +9,9 @@ FPS = 60
 BASE_WIDTH, BASE_HEIGHT = 1920, 1080
 FONT_NAME = "Arial"
 
-# Colors
+# Colors (Fallbacks if assets are missing)
 BG_COLOR = (10, 10, 15)
-FLOOR_COLOR = (34, 139, 34)
-WALL_COLOR = (100, 100, 100)
-CRATE_COLOR = (139, 69, 19)
-BOMB_COLOR = (20, 20, 20)
 EXPLOSION_COLOR = (255, 140, 0)
-POWERUP_COLORS = {
-    0: (0, 0, 0),       # Bomb+ (Black)
-    1: (255, 69, 0),    # Range+ (Red-Orange)
-    2: (0, 191, 255)    # Speed+ (Deep Sky Blue)
-}
 
 # 16 Player Colors
 PLAYER_COLORS = [
@@ -38,10 +29,14 @@ BTN_START = 3
 def tint_image(image, color):
     """Tints a Pygame surface with a color while preserving transparency."""
     tinted = image.copy()
-    # BLEND_RGBA_MULT multiplies the RGB values while keeping the alpha intact.
-    # Best results occur if your base sprite has a lot of white/grayscale.
     tinted.fill(color, special_flags=pygame.BLEND_RGBA_MULT)
     return tinted
+
+def create_fallback(color, size=(16, 16)):
+    """Creates a simple colored square if an asset is missing."""
+    surf = pygame.Surface(size, pygame.SRCALPHA)
+    surf.fill(color)
+    return surf
 
 class Player:
     def __init__(self, joy_id, instance_id, nickname, color, base_img):
@@ -49,13 +44,11 @@ class Player:
         self.instance_id = instance_id
         self.nickname = nickname
         self.color = color
-        self.base_img = base_img # The raw 16x16 asset
-        self.sprite = None       # The scaled & tinted asset used for drawing
+        self.base_img = base_img 
+        self.sprite = None       
         
         self.ready = False
-        self.voted_quit = False
-        self.voted_yes = False
-        self.voted_no = False
+        self.voted_quit = self.voted_yes = self.voted_no = False
         
         self.score = 0
         self.reset()
@@ -73,8 +66,7 @@ class Player:
     def update(self, dt, joystick, grid, bombs, cols, rows):
         if not self.alive: return
 
-        if self.move_cooldown > 0:
-            self.move_cooldown -= dt
+        if self.move_cooldown > 0: self.move_cooldown -= dt
             
         if self.move_cooldown <= 0:
             axis_x = joystick.get_axis(0)
@@ -116,7 +108,7 @@ class PowerUp:
     def __init__(self, x, y, p_type):
         self.grid_x = x
         self.grid_y = y
-        self.type = p_type
+        self.type = p_type # 0: Bomb+, 1: Range+, 2: Speed+
 
 class Game:
     def __init__(self):
@@ -148,7 +140,17 @@ class Game:
         self.explosions = []
         self.powerups = []
         
+        self.raw_assets = {}
+        self.scaled_assets = {}
         self.load_assets()
+
+    def load_image_or_fallback(self, filename, fallback_color):
+        path = os.path.join("assets", filename)
+        if os.path.exists(path):
+            return pygame.image.load(path).convert_alpha()
+        else:
+            print(f"[Warning] Missing {filename}, using fallback.")
+            return create_fallback(fallback_color)
 
     def load_assets(self):
         # Music
@@ -157,26 +159,38 @@ class Game:
             self.playlist = [os.path.join('music', f) for f in os.listdir('music') if f.endswith(('.mp3', '.ogg', '.wav'))]
         if self.playlist: pygame.mixer.music.load(self.playlist[0])
 
-        # Hero Sprites (hero1.png to hero4.png)
+        # World Assets
+        self.raw_assets['floor'] = self.load_image_or_fallback("floor.png", (34, 139, 34))
+        self.raw_assets['wall'] = self.load_image_or_fallback("wall.png", (100, 100, 100))
+        self.raw_assets['block'] = self.load_image_or_fallback("block.png", (139, 69, 19))
+        self.raw_assets['bomb'] = self.load_image_or_fallback("bomb.png", (20, 20, 20))
+        
+        # PowerUps
+        self.raw_assets['powerup_0'] = self.load_image_or_fallback("powerup1.png", (0, 0, 0))       # Bomb+
+        self.raw_assets['powerup_1'] = self.load_image_or_fallback("powerup2.png", (255, 69, 0))    # Range+
+        self.raw_assets['powerup_2'] = self.load_image_or_fallback("powerup3.png", (0, 191, 255))   # Speed+
+
+        # Hero Sprites
         self.hero_images = []
         for i in range(1, 5):
-            path = f"assets/hero{i}.png"
-            if os.path.exists(path):
-                self.hero_images.append(pygame.image.load(path).convert_alpha())
-            else:
-                # Fallback if asset is missing: A white 16x16 square
-                fallback = pygame.Surface((16, 16), pygame.SRCALPHA)
-                fallback.fill((255, 255, 255))
-                self.hero_images.append(fallback)
+            self.hero_images.append(self.load_image_or_fallback(f"hero{i}.png", (255, 255, 255)))
+
+    def scale_world_assets(self):
+        """Called once map dimensions are calculated to scale all 16x16 PNGs to the grid tile size."""
+        size = (self.tile_size, self.tile_size)
+        for key, img in self.raw_assets.items():
+            self.scaled_assets[key] = pygame.transform.scale(img, size)
 
     def reset_all_votes(self):
-        for p in self.players.values():
-            p.voted_quit = p.voted_yes = p.voted_no = False
+        for p in self.players.values(): p.voted_quit = p.voted_yes = p.voted_no = False
 
     def calculate_map_size(self, num_players):
-        extra_space = max(0, ((num_players - 1) // 2) * 2)
-        self.cols = 15 + extra_space
-        self.rows = 11 + extra_space
+        """Aggressive scaling: Gives players WAY more room as the lobby fills."""
+        # Base 15x11 for 2 players. Add +2 cols and +1 row per extra player.
+        extra_players = max(0, num_players - 2)
+        self.cols = 15 + (extra_players * 2)
+        self.rows = 11 + (extra_players * 1)
+        
         if self.cols % 2 == 0: self.cols += 1
         if self.rows % 2 == 0: self.rows += 1
         
@@ -189,6 +203,7 @@ class Game:
         self.explosions.clear()
         self.powerups.clear()
         
+        # 1. Logic Grid Generation
         self.grid = [[0 for _ in range(self.cols)] for _ in range(self.rows)]
         for y in range(self.rows):
             for x in range(self.cols):
@@ -197,45 +212,47 @@ class Game:
                 elif random.random() < 0.65: 
                     self.grid[y][x] = 2 
 
+        # 2. Player Safe Spawns
         perimeter = []
-        for x in range(1, self.cols-1, 2):
-            perimeter.extend([(x, 1), (x, self.rows-2)])
-        for y in range(3, self.rows-3, 2):
-            perimeter.extend([(1, y), (self.cols-2, y)])
+        for x in range(1, self.cols-1, 2): perimeter.extend([(x, 1), (x, self.rows-2)])
+        for y in range(3, self.rows-3, 2): perimeter.extend([(1, y), (self.cols-2, y)])
             
         random.shuffle(perimeter)
-        spawns = perimeter[:len(self.players)]
+        spawns = perimeter[:max(1, len(self.players))]
         
         for idx, p in enumerate(self.players.values()):
-            sx, sy = spawns[idx]
+            sx, sy = spawns[idx % len(spawns)]
             p.grid_x, p.grid_y = sx, sy
             safe_tiles = [(sx, sy), (sx+1, sy), (sx-1, sy), (sx, sy+1), (sx, sy-1)]
             for (tx, ty) in safe_tiles:
                 if 0 <= tx < self.cols and 0 <= ty < self.rows and self.grid[ty][tx] == 2:
                     self.grid[ty][tx] = 0
 
+        # 3. PRE-RENDER STATIC BACKGROUND (Massive performance boost for Radxa)
         map_w = self.cols * self.tile_size
         map_h = self.rows * self.tile_size
         self.static_bg = pygame.Surface((map_w, map_h))
-        self.static_bg.fill(FLOOR_COLOR)
+        
         for y in range(self.rows):
             for x in range(self.cols):
+                # Always draw floor first
+                self.static_bg.blit(self.scaled_assets['floor'], (x * self.tile_size, y * self.tile_size))
+                # Draw wall on top if it's a solid block
                 if self.grid[y][x] == 1:
-                    rect = pygame.Rect(x * self.tile_size, y * self.tile_size, self.tile_size, self.tile_size)
-                    pygame.draw.rect(self.static_bg, WALL_COLOR, rect)
+                    self.static_bg.blit(self.scaled_assets['wall'], (x * self.tile_size, y * self.tile_size))
 
     def start_game(self):
         self.reset_all_votes()
         num_players = max(2, len(self.players))
-        self.calculate_map_size(num_players)
         
-        # We process players here because tile_size is now finalized for the match
+        self.calculate_map_size(num_players)
+        self.scale_world_assets() # Scale World PNGs
+        
         for p in self.players.values(): 
             p.reset()
-            # 1. Scale the 16x16 raw image up to the dynamic grid size
-            size = self.tile_size - 12
+            # Scale Hero PNGs to the new dynamic tile size
+            size = self.tile_size - 8
             scaled_img = pygame.transform.scale(p.base_img, (size, size))
-            # 2. Apply the Color Tint
             p.sprite = tint_image(scaled_img, p.color)
 
         self.generate_level()
@@ -258,7 +275,6 @@ class Game:
                     nick = raw_name.replace("Gamepad_", "") if raw_name.startswith("Gamepad_") else raw_name
                     
                     color = PLAYER_COLORS[self.color_idx % len(PLAYER_COLORS)]
-                    # Assign them one of the 4 base assets based on join order
                     base_img = self.hero_images[self.color_idx % len(self.hero_images)]
                     
                     self.color_idx += 1
@@ -278,8 +294,7 @@ class Game:
                     elif event.button == BTN_START: player.voted_no = True; player.voted_yes = False
                     if sum(1 for p in self.players.values() if p.voted_yes) >= (len(self.players) // 2) + 1: return False 
                     elif sum(1 for p in self.players.values() if p.voted_no) >= (len(self.players) // 2) + 1: 
-                        self.state = self.previous_state 
-                        self.reset_all_votes()
+                        self.state = self.previous_state; self.reset_all_votes()
 
                 elif self.state == "MENU":
                     if event.button == BTN_SELECT: 
@@ -364,43 +379,47 @@ class Game:
         self.explosions.append(Explosion(exp_tiles))
 
     def draw_playing(self):
+        # 1. Blit the highly-optimized static background (Floor + Solid Walls)
         if self.static_bg: self.screen.blit(self.static_bg, (self.offset_x, self.offset_y))
 
+        # 2. Draw PowerUps
         for pu in self.powerups:
-            rect = pygame.Rect(self.offset_x + pu.grid_x * self.tile_size + 10, self.offset_y + pu.grid_y * self.tile_size + 10, self.tile_size - 20, self.tile_size - 20)
-            pygame.draw.circle(self.screen, POWERUP_COLORS[pu.type], rect.center, self.tile_size // 3)
-            t = self.small_font.render("B" if pu.type == 0 else "R" if pu.type == 1 else "S", True, (255,255,255))
-            self.screen.blit(t, t.get_rect(center=rect.center))
+            px = self.offset_x + pu.grid_x * self.tile_size
+            py = self.offset_y + pu.grid_y * self.tile_size
+            asset_key = f"powerup_{pu.type}"
+            self.screen.blit(self.scaled_assets[asset_key], (px, py))
 
+        # 3. Draw Destructible Blocks
         for y in range(self.rows):
             for x in range(self.cols):
                 if self.grid[y][x] == 2:
-                    rect = pygame.Rect(self.offset_x + x * self.tile_size, self.offset_y + y * self.tile_size, self.tile_size, self.tile_size)
-                    pygame.draw.rect(self.screen, CRATE_COLOR, rect)
-                    pygame.draw.rect(self.screen, (100, 50, 10), rect, 2)
+                    px = self.offset_x + x * self.tile_size
+                    py = self.offset_y + y * self.tile_size
+                    self.screen.blit(self.scaled_assets['block'], (px, py))
 
+        # 4. Draw Bombs
         for bomb in self.bombs:
-            center = (self.offset_x + bomb.grid_x * self.tile_size + self.tile_size // 2, self.offset_y + bomb.grid_y * self.tile_size + self.tile_size // 2)
-            pygame.draw.circle(self.screen, BOMB_COLOR, center, self.tile_size // 2 - 6)
+            px = self.offset_x + bomb.grid_x * self.tile_size
+            py = self.offset_y + bomb.grid_y * self.tile_size
+            self.screen.blit(self.scaled_assets['bomb'], (px, py))
 
+        # 5. Draw Explosions
         for exp in self.explosions:
             for tx, ty in exp.tiles:
                 rect = pygame.Rect(self.offset_x + tx * self.tile_size, self.offset_y + ty * self.tile_size, self.tile_size, self.tile_size)
                 pygame.draw.rect(self.screen, EXPLOSION_COLOR, rect)
 
+        # 6. Draw Players & Tags
         for p in self.players.values():
             if p.alive:
                 px = self.offset_x + p.grid_x * self.tile_size
                 py = self.offset_y + p.grid_y * self.tile_size
-                rect = pygame.Rect(px + 6, py + 6, self.tile_size - 12, self.tile_size - 12)
                 
-                # DRAW THE TINTED SPRITE
+                # Draw the Color-Tinted PNG Sprite
                 if p.sprite:
-                    self.screen.blit(p.sprite, rect.topleft)
-                else: # Fallback to rectangle
-                    pygame.draw.rect(self.screen, p.color, rect)
+                    self.screen.blit(p.sprite, (px + 4, py + 4))
                 
-                # Player Nickname
+                # Nickname
                 name_surf = self.small_font.render(p.nickname, True, p.color)
                 self.screen.blit(name_surf, name_surf.get_rect(center=(px + self.tile_size//2, py - 8)))
 
@@ -428,10 +447,8 @@ class Game:
             color = (50, 255, 50) if p.ready else (255, 50, 50)
             text = self.font.render(f"{p.nickname} - {status}", True, color)
             
-            # Show tinted sprite in the lobby as well!
             preview_img = pygame.transform.scale(p.base_img, (25, 25))
             self.screen.blit(tint_image(preview_img, p.color), (x, cy))
-            
             self.screen.blit(text, (x + 40, cy))
 
     def draw_leaderboard(self):
