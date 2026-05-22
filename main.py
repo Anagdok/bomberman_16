@@ -466,10 +466,10 @@ class Game:
             self.screen.blit(text, (BASE_WIDTH//2 - text.get_width()//2, y))
             y += 35
 
-        # --- POWERUP KEY MENU INSTRUCTIONS ---
+        # --- POWERUP KEY MENU INSTRUCTIONS (FIXED VERTICAL SPACING) ---
         powerup_info_y = y
         powerup_texts = ["- Zwiększa ilość bomb", "- Zwiększa zasięg wybuchu", "- Zwiększa prędkość ruchu"]
-        start_x_pu = BASE_WIDTH//2 - 350
+        start_x_pu = BASE_WIDTH//2 - 150  # Centered block X coordinate
         
         for i in range(3):
             # Draw Powerup Sprite
@@ -479,9 +479,11 @@ class Game:
             desc = self.font.render(powerup_texts[i], True, (255, 255, 255))
             self.screen.blit(desc, (start_x_pu + 40, powerup_info_y + 2))
             
-            start_x_pu += 250 # Space out horizontally
+            # Increment Y axis to push the next powerup down to a new line
+            powerup_info_y += 45 
 
-        y_start = 520
+        # Push the player lobby grid down so it doesn't overlap the vertical powerups
+        y_start = 620 
         col_w = 400
         cols = 4
         for idx, p in enumerate(self.players.values()):
