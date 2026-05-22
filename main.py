@@ -12,6 +12,10 @@ FONT_NAME = "Arial"
 # Background Color
 BG_COLOR = (10, 10, 15)
 
+# If your base PNGs for the world are grey/white, this will force them to be colored
+# so you can tell them apart (Floor = Green, Wall = Dark Grey, Crate = Brown)
+TINT_WORLD_ASSETS = True 
+
 # 16 HIGH-CONTRAST PLAYER COLORS
 PLAYER_COLORS = [
     (255, 30, 30),    # 1. Pure Red
@@ -32,21 +36,13 @@ PLAYER_COLORS = [
     (150, 150, 150)   # 16. Light Gray
 ]
 
-# PowerUp Colors (For fallbacks)
-POWERUP_COLORS = {
-    0: (0, 0, 0),       # Bomb+ 
-    1: (255, 69, 0),    # Range+ 
-    2: (0, 191, 255)    # Speed+ 
-}
-
 BTN_A = 0
 BTN_B = 1
 BTN_SELECT = 2
 BTN_START = 3
 
 def tint_image(image, color):
-    """Tints a Pygame surface with a color while preserving transparency.
-       Best results when the base image is purely white/grayscale."""
+    """Tints a Pygame surface with a color while preserving transparency."""
     tinted = image.copy()
     tinted.fill(color, special_flags=pygame.BLEND_RGBA_MULT)
     return tinted
@@ -163,10 +159,13 @@ class Game:
         self.scaled_assets = {}
         self.load_assets()
 
-    def load_image_or_fallback(self, filename, fallback_color):
+    def load_image_or_fallback(self, filename, fallback_color, tint=False):
         path = os.path.join("assets", filename)
         if os.path.exists(path):
-            return pygame.image.load(path).convert_alpha()
+            img = pygame.image.load(path).convert_alpha()
+            if tint and TINT_WORLD_ASSETS:
+                return tint_image(img, fallback_color)
+            return img
         else:
             print(f"[Warning] Missing {filename}, using fallback color.")
             return create_fallback(fallback_color)
@@ -177,17 +176,17 @@ class Game:
             self.playlist = [os.path.join('music', f) for f in os.listdir('music') if f.endswith(('.mp3', '.ogg', '.wav'))]
         if self.playlist: pygame.mixer.music.load(self.playlist[0])
 
-        # World Assets (Updated fallback colors to be more recognizable if PNGs are missing)
-        self.raw_assets['floor'] = self.load_image_or_fallback("floor.png", (40, 160, 40))   # Richer Green
-        self.raw_assets['wall'] = self.load_image_or_fallback("wall.png", (60, 60, 70))      # Darker Slate Gray
-        self.raw_assets['block'] = self.load_image_or_fallback("block.png", (160, 82, 45))   # Brighter Brown
+        # World Assets (Forced Tinting enabled to fix the grey/purple monochrome issue)
+        self.raw_assets['floor'] = self.load_image_or_fallback("floor.png", (40, 130, 40), tint=True)   # Deep Green
+        self.raw_assets['wall'] = self.load_image_or_fallback("wall.png", (50, 50, 60), tint=True)      # Dark Slate
+        self.raw_assets['block'] = self.load_image_or_fallback("block.png", (180, 100, 50), tint=True)  # Wood Brown
         self.raw_assets['bomb'] = self.load_image_or_fallback("bomb.png", (30, 30, 30))
-        self.raw_assets['explosion'] = self.load_image_or_fallback("explosion.png", (255, 140, 0)) # NEW: Explosion Sprite
+        self.raw_assets['explosion'] = self.load_image_or_fallback("explosion.png", (255, 140, 0))
         
         # PowerUps
-        self.raw_assets['powerup_0'] = self.load_image_or_fallback("powerup1.png", (0, 0, 0))       
-        self.raw_assets['powerup_1'] = self.load_image_or_fallback("powerup2.png", (255, 69, 0))    
-        self.raw_assets['powerup_2'] = self.load_image_or_fallback("powerup3.png", (0, 191, 255))   
+        self.raw_assets['powerup_0'] = self.load_image_or_fallback("powerup1.png", (200, 200, 200)) # Bomb       
+        self.raw_assets['powerup_1'] = self.load_image_or_fallback("powerup2.png", (255, 69, 0))    # Range
+        self.raw_assets['powerup_2'] = self.load_image_or_fallback("powerup3.png", (0, 191, 255))   # Speed
 
         # Hero Sprites
         self.hero_images = []
@@ -203,9 +202,10 @@ class Game:
         for p in self.players.values(): p.voted_quit = p.voted_yes = p.voted_no = False
 
     def calculate_map_size(self, num_players):
+        # Increased map expansion rate to give more room
         extra_players = max(0, num_players - 2)
-        self.cols = 15 + (extra_players * 2)
-        self.rows = 11 + (extra_players * 1)
+        self.cols = 15 + (extra_players * 3) 
+        self.rows = 11 + (extra_players * 2)
         
         if self.cols % 2 == 0: self.cols += 1
         if self.rows % 2 == 0: self.rows += 1
@@ -219,6 +219,7 @@ class Game:
         self.explosions.clear()
         self.powerups.clear()
         
+        # 1. Build Base Grid
         self.grid = [[0 for _ in range(self.cols)] for _ in range(self.rows)]
         for y in range(self.rows):
             for x in range(self.cols):
@@ -227,21 +228,36 @@ class Game:
                 elif random.random() < 0.65: 
                     self.grid[y][x] = 2 
 
+        # 2. Perfect Uniform Perimeter Spawning Algorithm
         perimeter = []
-        for x in range(1, self.cols-1, 2): perimeter.extend([(x, 1), (x, self.rows-2)])
-        for y in range(3, self.rows-3, 2): perimeter.extend([(1, y), (self.cols-2, y)])
-            
-        random.shuffle(perimeter)
-        spawns = perimeter[:max(1, len(self.players))]
+        # Top edge
+        for x in range(1, self.cols-1, 2): perimeter.append((x, 1))
+        # Right edge
+        for y in range(3, self.rows-1, 2): perimeter.append((self.cols-2, y))
+        # Bottom edge (right to left)
+        for x in range(self.cols-4, 0, -2): perimeter.append((x, self.rows-2))
+        # Left edge (bottom to top)
+        for y in range(self.rows-4, 1, -2): perimeter.append((1, y))
+
+        # Evenly divide the perimeter among all active players
+        num_players = max(1, len(self.players))
+        step = len(perimeter) / num_players
         
+        spawns = []
+        for i in range(num_players):
+            idx = int(i * step) % len(perimeter)
+            spawns.append(perimeter[idx])
+        
+        # 3. Assign Players to Spawns and clear surrounding blocks
         for idx, p in enumerate(self.players.values()):
-            sx, sy = spawns[idx % len(spawns)]
+            sx, sy = spawns[idx]
             p.grid_x, p.grid_y = sx, sy
-            safe_tiles = [(sx, sy), (sx+1, sy), (sx-1, sy), (sx, sy+1), (sx, sy-1)]
+            safe_tiles = [(sx, sy), (sx+1, sy), (sx-1, sy), (sx, sy+1), (sx, sy-1), (sx+2, sy), (sx-2, sy), (sx, sy+2), (sx, sy-2)]
             for (tx, ty) in safe_tiles:
                 if 0 <= tx < self.cols and 0 <= ty < self.rows and self.grid[ty][tx] == 2:
                     self.grid[ty][tx] = 0
 
+        # 4. Bake Static Background Map
         map_w = self.cols * self.tile_size
         map_h = self.rows * self.tile_size
         self.static_bg = pygame.Surface((map_w, map_h))
@@ -335,9 +351,9 @@ class Game:
                 player.update(dt, self.joysticks[iid], self.grid, self.bombs, self.cols, self.rows)
                 for p_up in self.powerups[:]:
                     if p_up.grid_x == player.grid_x and p_up.grid_y == player.grid_y:
-                        if p_up.type == 0: player.max_bombs = min(6, player.max_bombs + 1)
-                        elif p_up.type == 1: player.bomb_range = min(8, player.bomb_range + 1)
-                        elif p_up.type == 2: player.move_delay = max(60, player.move_delay - 25)
+                        if p_up.type == 0: player.max_bombs = min(8, player.max_bombs + 1)
+                        elif p_up.type == 1: player.bomb_range = min(10, player.bomb_range + 1)
+                        elif p_up.type == 2: player.move_delay = max(60, player.move_delay - 20)
                         self.powerups.remove(p_up)
 
         active_bombs = []
@@ -413,7 +429,6 @@ class Game:
             for tx, ty in exp.tiles:
                 px = self.offset_x + tx * self.tile_size
                 py = self.offset_y + ty * self.tile_size
-                # Draw the newly integrated explosion asset
                 self.screen.blit(self.scaled_assets['explosion'], (px, py))
 
         for p in self.players.values():
@@ -425,7 +440,6 @@ class Game:
                     self.screen.blit(p.sprite, (px + 4, py + 4))
                 
                 name_surf = self.small_font.render(p.nickname, True, p.color)
-                # Drop shadow on nickname for better readability
                 shadow_surf = self.small_font.render(p.nickname, True, (0,0,0))
                 self.screen.blit(shadow_surf, shadow_surf.get_rect(center=(px + self.tile_size//2 + 1, py - 7)))
                 self.screen.blit(name_surf, name_surf.get_rect(center=(px + self.tile_size//2, py - 8)))
@@ -434,7 +448,6 @@ class Game:
         title = self.title_font.render("16-PLAYER BOMBERMAN", True, (255, 140, 0))
         self.screen.blit(title, (BASE_WIDTH//2 - title.get_width()//2, 80))
 
-        # --- BETTER CONTROL INSTRUCTIONS ---
         instructions = [
             "Podłącz gamepad, aby dołączyć do gry.",
             "",
@@ -443,19 +456,32 @@ class Game:
             "» Przycisk A (Dół)  -  Podłożenie bomby",
             "» Przycisk START    -  Oznacz jako GOTOWY w lobby",
             "» Przycisk SELECT   -  Głosuj za wyłączeniem gry",
-            "",
-            "Zniszcz skrzynie by zdobyć (B)omby, (R)ange, (S)peed."
+            ""
         ]
         
         y = 170
-        for idx, line in enumerate(instructions):
+        for line in instructions:
             color = (255, 215, 0) if "STEROWANIE" in line else (200, 200, 200)
             text = self.font.render(line, True, color)
             self.screen.blit(text, (BASE_WIDTH//2 - text.get_width()//2, y))
             y += 35
 
-        # Player grid drawing
-        y_start = 550
+        # --- POWERUP KEY MENU INSTRUCTIONS ---
+        powerup_info_y = y
+        powerup_texts = ["- Zwiększa ilość bomb", "- Zwiększa zasięg wybuchu", "- Zwiększa prędkość ruchu"]
+        start_x_pu = BASE_WIDTH//2 - 350
+        
+        for i in range(3):
+            # Draw Powerup Sprite
+            pu_sprite = pygame.transform.scale(self.raw_assets[f'powerup_{i}'], (30, 30))
+            self.screen.blit(pu_sprite, (start_x_pu, powerup_info_y))
+            # Draw Description Text
+            desc = self.font.render(powerup_texts[i], True, (255, 255, 255))
+            self.screen.blit(desc, (start_x_pu + 40, powerup_info_y + 2))
+            
+            start_x_pu += 250 # Space out horizontally
+
+        y_start = 520
         col_w = 400
         cols = 4
         for idx, p in enumerate(self.players.values()):
